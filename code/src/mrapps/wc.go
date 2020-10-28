@@ -1,5 +1,6 @@
 package main
 
+//map reduce 实现
 //
 // a word-count application "plugin" for MapReduce.
 //
@@ -11,7 +12,7 @@ import (
 	"strings"
 	"unicode"
 
-	"../mr"
+	"ds/mr"
 )
 
 //
