@@ -1,0 +1,53 @@
+规则:
+1.map阶段应该将中间key划分到nReduce个reduce任务的桶中，
+其中nReduce是main/mrmaster.go传递给MakeMaster()的参数,默认值为10。
+2.Worker的实现应该把X'th reduce任务的输出放在文件mr-out-X中。
+3.一个mr-out-X文件应该包含每一个Reduce函数输出的一行。这一行应该用Go的"%v %v "格式生成，用key和value调用。
+看看main/mrsequential.go中是否有一行注释 "这是正确的格式"。如果你的实现与这个格式偏差太大，测试脚本就会失败。
+4.你可以修改mr/worker.go、mr/master.go和mr/rpc.go。
+你可以临时修改其他文件进行测试，但要确保你的代码能和原来的版本一起工作，我们会用原来的版本进行测试。
+5.worker应该把map产生的中间值放在当前目录的文件中，以后你的worder可以把它们作为Reduce任务的输入来读取。
+6.main/mrmaster.go期望mr/master.go实现一个Done()方法，当MapReduce作业完全完成时，该方法返回true；
+此时，mrmaster.go将退出。
+7.当工作完全结束后，worker进程应该退出。一个简单的实现方法是使用call()的返回值：如果worker没有联系到master，
+它可以认为master已经退出了，因为工作已经完成，所以worker也可以终止。根据你的设计，
+你可能也会发现有一个 "请退出 "的伪任务，master可以给worker一个任务。
+
+技巧:
+1.一种方法是修改mr/worker.go的Worker()，向master发送一个RPC请求任务。
+然后修改master，以一个尚未启动的map任务的文件名作为响应。然后修改worker来读取该文件，并调用应用程序Map函数，
+如mrsequential.go。
+2.应用程序Map和Reduce函数是在运行时使用Go插件包从名称以.so结尾的文件中加载的。
+3.如果你改变了mr/目录中的任何东西，你可能需要重新构建你使用的任何MapReduce插件，
+使用类似go build -buildmode=plugin ../mrapps/wc.go这样的东西。
+4.这个实验室依赖于worker共享一个文件系统。当所有的worker都在同一台机器上运行时，这很简单，
+但如果工作者在不同的机器上运行，就需要一个全局文件系统，比如GFS。
+5.中间文件合理的命名方式是mr-X-Y，其中X是Map任务号，Y是reduce任务号。
+6.Worker的map任务代码需要一种方法将中间key/value对存储在文件中，以便在reduce任务期间能够正确地读回。
+一种可能性是使用Go的encoding/json 包。要将key/value对写入JSON文件中：
+  enc := json.NewEncoder(file)
+  for _, kv := ... {
+    err := enc.Encode(&kv)
+  并读回这样的文件:
+  dec := json.NewDecoder(file)
+  for {
+    var kv KeyValue
+    if err := dec.Decode(&kv); err != nil {
+      break
+    }
+    kva = append(kva, kv)
+  }
+7.你的worker的map部分可以使用ihash(key)函数(在worker.go中)来挑选给定key的reduce任务。
+8.你可以从mrsequential.go中偷取一些代码，用于读取Map输入文件，对Map和Reduce之间的中间key/value对进行排序，
+以及将Reduce输出存储在文件中。
+9.master作为RPC服务器，将是并发的，别忘了锁定共享数据。
+10.worker有时需要等待，例如，在最后一个map完成之前，还原不能开始。一种可能是让worker定期向master请求工作，
+在每次请求之间用time.Sleep()睡觉。另一种可能是master中的相关RPC处理程序有一个循环等待，要么用time.Sleep()，
+要么用sync.Cond。Go在自己的线程中运行每个RPC的处理程序，所以一个处理程序在等待的事实不会妨碍master处理其他RPC。
+11.master无法可靠地区分crashed的workder、还活着但因某种原因而停滞的worker以及正在执行但速度太慢的worker。
+你能做的最好的办法是让master等待一段时间，然后放弃并将任务重新发布给不同的worker。对于这个lab，让master等待十秒钟，
+之后mater应该认为worker已经死亡（当然，可能没有）。
+12.要测试崩溃恢复，可以使用mrapps/crash.go应用插件。它在Map和Reduce函数中随机退出。
+13.为了确保没有人在崩溃的情况下观察到部分写入的文件，MapReduce论文中提到了使用临时文件的技巧，
+并在完全写入后对其进行原子重命名。你可以使用ioutil.TempFile来创建一个临时文件，并使用os.Rename来原子重命名它。
+14.test-mr.sh运行子目录mr-tmp中的所有进程，所以如果有什么问题，你想查看中间文件或输出文件，可以到那里查看。
