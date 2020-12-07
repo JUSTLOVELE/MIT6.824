@@ -1,3 +1,6 @@
+map(filename, contnet)          -> list(word, "1")
+reduce(word, "1") -> list("1") //单词word的数量,也就是集合1的长度
+
 规则:
 1.map阶段应该将中间key划分到nReduce个reduce任务的桶中，
 其中nReduce是main/mrmaster.go传递给MakeMaster()的参数,默认值为10。

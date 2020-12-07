@@ -18,6 +18,11 @@ import (
 	"plugin"
 )
 
+type  KeyValue struct {
+	Key string
+	Value string
+}
+
 func main() {
 	if len(os.Args) != 2 {
 		fmt.Fprintf(os.Stderr, "Usage: mrworker xxx.so\n")

@@ -6,13 +6,15 @@ package main
 // go run mrsequential.go wc.so pg*.txt
 //
 
-import "fmt"
-import "ds/mr"
-import "plugin"
-import "os"
-import "log"
-import "io/ioutil"
-import "sort"
+import (
+	"ds/mr"
+	"fmt"
+	"io/ioutil"
+	"log"
+	"os"
+	"plugin"
+	"sort"
+)
 
 // for sorting by key.
 type ByKey []mr.KeyValue
@@ -27,7 +29,11 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Usage: mrsequential xxx.so inputfiles...\n")
 		os.Exit(1)
 	}
-
+	//输出: wc.so
+	fmt.Println(os.Args[1])
+	//输出: pg-being_ernest.txt
+	fmt.Println(os.Args[2])
+	//载入wc.so获取mapf和reducf
 	mapf, reducef := loadPlugin(os.Args[1])
 
 	//
@@ -36,7 +42,12 @@ func main() {
 	// accumulate the intermediate Map output.
 	//
 	intermediate := []mr.KeyValue{}
+	//接下来做map、reduce
+	//map(filename, contnet)          -> list(word, "1")
+	//reduce(word, "1") -> list("1") //单词word的数量,也就是集合1的长度
+	//遍历pg开头的一系列
 	for _, filename := range os.Args[2:] {
+		fmt.Println(filename)
 		file, err := os.Open(filename)
 		if err != nil {
 			log.Fatalf("cannot open %v", filename)
@@ -46,10 +57,12 @@ func main() {
 			log.Fatalf("cannot read %v", filename)
 		}
 		file.Close()
+		//kva是一个数组,{this 1} {place 1} {but 1} {in 1} {vain 1}
 		kva := mapf(filename, string(content))
 		intermediate = append(intermediate, kva...)
 	}
-
+	//60多万个单词
+	fmt.Println(len(intermediate))
 	//
 	// a big difference from real MapReduce is that all the
 	// intermediate data is in one place, intermediate[],
@@ -75,6 +88,7 @@ func main() {
 		for k := i; k < j; k++ {
 			values = append(values, intermediate[k].Value)
 		}
+		fmt.Println(intermediate[i].Key)
 		output := reducef(intermediate[i].Key, values)
 
 		// this is the correct format for each line of Reduce output.
