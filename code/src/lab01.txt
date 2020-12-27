@@ -1,3 +1,10 @@
+执行:
+go build -buildmode=plugin ../mrapps/wc.go
+go run mrsequential.go wc.so pg*.txt
+go run mrmaster.go pg-*.txt
+go run mrworker.go wc.so
+
+
 map(filename, contnet)          -> list(word, "1")
 reduce(word, "1") -> list("1") //单词word的数量,也就是集合1的长度
 

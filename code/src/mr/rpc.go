@@ -8,10 +8,14 @@ package mr
 //
 
 import (
+	"fmt"
+	"log"
 	"os"
 	"strconv"
 	"time"
 )
+
+const ISTEST = false
 
 //
 // example to show how to declare the arguments
@@ -54,23 +58,39 @@ type ExampleReply struct {
 //}
 
 type Task struct {
-	Id     int       //任务id,从1开始;如果从0开始rpc传输过程会变为-1
+	FileIndex     int       //任务id,从1开始;如果从0开始rpc传输过程会变为-1
 	Status int       //任务状态
+	Phase int
 	FileName string
 	Time   time.Time //启动时间
 	NReduce int
+	Alive bool
+	NMaps int
 }
-//map任务数目
-type MapTaskNumber struct {
-	Number int
-}
-//reduce任务数目
-type ReduceTaskNumber struct {
-	Number int
+
+type FileTaskStat struct {
+	Id int
+	Status int
+	StartTime time.Time
 }
 
 type TaskReply struct {
-	allFinish bool
+	Task *Task
+}
+
+type TaskArgs struct {
+	WorkerId int
+}
+
+type RegisterWork struct {
+	WorkerId int
+}
+
+type ReportTaskArgs struct {
+	Done     bool
+	FileIndex      int
+	Phase    int
+	WorkerId int
 }
 
 // Cook up a unique-ish UNIX-domain socket name
@@ -83,13 +103,23 @@ func masterSock() string {
 	return s
 }
 
+func DPrintf(format string, v ...interface{}) {
+	if ISTEST {
+		log.Printf(format+"\n", v...)
+	}
+}
+
 const(
 
-	TASK_STATUS_WAIT_MAP = 0//初始化完成,等待map任务请求
-	TASK_STATUS_DO_MAP = 1 //执行map任务
-	TASK_STATUS_MAP_FINISH_WAIT_REDUCE = 2
-	TASK_STATUS_DO_REDUCE = 3
-	TASK_STATUS_REDUCE_FINSH = 4
+	TASK_STATUS_DO_MAP = 1 //map阶段
+	TASK_STATUS_DO_REDUCE = 2 //reduce阶段
 )
 
+func reduceName(mapIdx, reduceIdx int) string {
+	return fmt.Sprintf("mr-%d-%d", mapIdx, reduceIdx)
+}
+
+func mergeName(reduceIdx int) string {
+	return fmt.Sprintf("mr-out-%d", reduceIdx)
+}
 

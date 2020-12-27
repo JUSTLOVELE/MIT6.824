@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"../mr"
+	"ds/mr"
 )
 
 func maybeCrash() {

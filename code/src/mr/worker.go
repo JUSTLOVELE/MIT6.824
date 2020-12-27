@@ -9,7 +9,7 @@ import (
 	"log"
 	"net/rpc"
 	"os"
-	"sort"
+	"strings"
 	"sync"
 )
 
@@ -39,7 +39,6 @@ func (w *worker) Done() bool {
 	return w.done
 }
 
-
 //
 // main/mrworker.go calls this function.
 //
@@ -51,9 +50,8 @@ func Worker(mapf func(string, string) []KeyValue,
 	w.mapf = mapf
 	w.done = false
 	w.reducef = reducef
-	w.RunTask()
-	//w.register()
-	//w.run()
+	w.register()
+	w.run()
 	// uncomment to send the Example RPC to the master.
 	//CallExample()
 }
@@ -62,152 +60,158 @@ type worker struct {
 	id      int
 	mapf    func(string, string) []KeyValue
 	reducef func(string, []string) string
-	done bool
-	mu sync.Mutex
+	done    bool
+	mu      sync.Mutex
+}
+
+func (w *worker) register() {
+	args := &ExampleArgs{}
+	reply := &RegisterWork{}
+	if ok := call("Master.RegWorker", args, reply); !ok {
+		log.Fatal("reg fail")
+	}
+	w.id = reply.WorkerId
+	DPrintf("注册成功")
+}
+
+
+func (w *worker) run() {
+	// if reqTask conn fail, worker exit
+	for {
+		t := w.reqTask()
+		if !t.Alive {
+			DPrintf("任务不存活")
+			return
+		}
+		w.doTask(t)
+	}
+}
+
+func (w *worker) reqTask() Task {
+
+	reply := TaskReply{}
+	args := TaskArgs{}
+	args.WorkerId = w.id
+	//第一个参数args是传递过去的是不会变的,在master修改这个值没有用
+	//第二个参数也就是task是给master修改的
+	//call("Master.GetOneTask", &args, &task)
+	if ok := call("Master.GetOneTask", &args, &reply); !ok {
+		fmt.Println("worker get task fail,exit")
+		os.Exit(1)
+	}
+
+	return *reply.Task
+}
+
+func (w *worker) doTask(t Task) {
+
+	switch t.Phase {
+	case TASK_STATUS_DO_MAP:
+		w.doMapTask(t)
+	case TASK_STATUS_DO_REDUCE:
+		w.doReduceTask(t)
+	default:
+		panic(fmt.Sprintf("task phase err: %v", t.Phase))
+	}
 
 }
 
-//执行map任务
-func (w *worker) doMapTask(task *Task) {
+func (w *worker) reportTask(t Task, done bool, err error) {
+	if err != nil {
+		log.Printf("%v", err)
+	}
+	args := ReportTaskArgs{}
+	args.Done = done
+	args.FileIndex = t.FileIndex
+	args.Phase = t.Phase
+	args.WorkerId = w.id
+	reply := ExampleReply{}
+	if ok := call("Master.ReportTask", &args, &reply); !ok {
+		DPrintf("report task fail:%+v", args)
+	}
+}
 
-	contents, err := ioutil.ReadFile(task.FileName)
+//执行map任务
+func (w *worker) doMapTask(t Task) {
+
+	contents, err := ioutil.ReadFile(t.FileName)
 
 	if err != nil {
-		fmt.Println("map任务读取文件失败")
+		w.reportTask(t, false, err)
 		return
 	}
 	//kva是这样的键值对{Project 1} {Gutenberg 1} {tm 1}
-	kva := w.mapf(task.FileName, string(contents))
-	reduces := make([][]KeyValue, task.NReduce)
+	kva := w.mapf(t.FileName, string(contents))
+	reduces := make([][]KeyValue, t.NReduce)
 
 	for _, kv := range kva {
-
-		idx := ihash(kv.Key) % task.NReduce
+		idx := ihash(kv.Key) % t.NReduce
 		reduces[idx] = append(reduces[idx], kv)
 	}
 
 	for idx, keyValues := range reduces {
 		//中间文件名
-		intermediateFileName := fmt.Sprintf("mr-%d-%d", task.Id, idx)
-		file, _ := os.Create(intermediateFileName)
-		sort.Sort(ByKey(keyValues))
+		intermediateFileName := fmt.Sprintf("mr-%d-%d", t.FileIndex, idx)
+		file, err := os.Create(intermediateFileName)
+
+		if err != nil {
+			w.reportTask(t, false, err)
+			return
+		}
+		//sort.Sort(ByKey(keyValues))
 		enc := json.NewEncoder(file)
 
 		for _, kv := range keyValues {
-			enc.Encode(&kv)
-			//fmt.Fprintf(file, "%v %v\n", kv.Key, kv.Value)
+			//enc.Encode(&kv)'
+			if err := enc.Encode(&kv); err != nil {
+				w.reportTask(t, false, err)
+			}
 		}
 
-		file.Close()
+		if err := file.Close(); err != nil {
+			w.reportTask(t, false, err)
+		}
 	}
-	//到这里第一个任务就完成了,可以告诉master该任务已完成
-	task.Status = TASK_STATUS_MAP_FINISH_WAIT_REDUCE
-	reply := ExampleReply{}
-	call("Master.FinishMapTask", &task, &reply)
+	//到这里任务就完成了,可以告诉master该任务已完成
+	w.reportTask(t, true, nil)
 }
 
 //reduce任务
-func (w *worker) doReduceTask(task *Task) {
-	//把map输出的中间值合并起来得到的task.Id=1,那么就要合并mr-1-0到mr-1-8;9个文件的数据
-	intermediate := []KeyValue{}
+func (w *worker) doReduceTask(t Task) {
 
-	for i := 0; i < task.NReduce; i++ {
-
-		var fileName string
-
-		if task.Id == 1 {
-			fileName = "mr-1-0"
-		}else{
-			fileName = fmt.Sprintf("mr-%d-%d", task.Id-1, i)
-		}
-
+	maps := make(map[string][]string)
+	for idx := 0; idx < t.NMaps; idx++ {
+		fileName := reduceName(idx, t.FileIndex)
 		file, err := os.Open(fileName)
-
 		if err != nil {
-			fmt.Println("doReduceTask打开文件失败")
+			w.reportTask(t, false, err)
 			return
 		}
-		//官网代码
 		dec := json.NewDecoder(file)
-		kva := []KeyValue{}
 		for {
 			var kv KeyValue
 			if err := dec.Decode(&kv); err != nil {
-				fmt.Println(err)
 				break
-				//return
 			}
-
-			kva = append(kva, kv)
+			if _, ok := maps[kv.Key]; !ok {
+				maps[kv.Key] = make([]string, 0, 100)
+			}
+			maps[kv.Key] = append(maps[kv.Key], kv.Value)
 		}
-
-		intermediate = append(intermediate, kva...)
-		file.Close()
 	}
 
-	oname := fmt.Sprintf("mr-out-%d", task.Id-1)
-	ofile, _ := os.Create(oname)
-
-	//
-	// call Reduce on each distinct key in intermediate[],
-	// and print the result to mr-out-0.
-	//
-	i := 0
-	for i < len(intermediate) {
-		j := i + 1
-		for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
-			j++
-		}
-		values := []string{}
-		for k := i; k < j; k++ {
-			values = append(values, intermediate[k].Value)
-		}
-
-		output := w.reducef(intermediate[i].Key, values)
-
-		// this is the correct format for each line of Reduce output.
-		fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
-
-		i = j
+	res := make([]string, 0, 100)
+	for k, v := range maps {
+		res = append(res, fmt.Sprintf("%v %v\n", k, w.reducef(k, v)))
 	}
 
-	ofile.Close()
-	task.Status = TASK_STATUS_REDUCE_FINSH
-	reply := TaskReply{allFinish: false}
-	call("Master.FinishReduceTask", &task, &reply)
-
-	if reply.allFinish {
-		w.done = true
+	if err := ioutil.WriteFile(mergeName(t.FileIndex), []byte(strings.Join(res, "")), 0600); err != nil {
+		w.reportTask(t, false, err)
 	}
+
+	w.reportTask(t, true, nil)
 }
 
-//是否需要根据nReduce数量控制进程?
-func (w *worker) RunTask() {
-	//请求任务
-	for w.Done() == false {
-
-		task := Task{
-			Id: -1,
-		}
-		args := ExampleArgs{}
-		//第一个参数args是传递过去的是不会变的,在master修改这个值没有用
-		//第二个参数也就是task是给master修改的
-		call("Master.GetTask", &args, &task)
-
-		if task.Id == -1 {
-			//fmt.Println("获取不到可执行的任务")
-			continue
-		}
-
-		if task.Status == TASK_STATUS_DO_MAP {
-			w.doMapTask(&task)
-		}
-
-		if task.Status == TASK_STATUS_DO_REDUCE {
-			w.doReduceTask(&task)
-		}
-	}
-}
 
 func CallExample() {
 
